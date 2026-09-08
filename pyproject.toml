@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xiaozhi-desktop-assistant"
+version = "0.3.0"
+description = "Local-first Windows workmate for Xiaozhi MCP with Office, browser, WeChat and scheduled delivery"
+requires-python = ">=3.11,<3.14"
+authors = [{name = "Your Company"}]
+readme = "README.md"
+license = {text = "Proprietary application source; see THIRD_PARTY_NOTICES.md for third-party licenses"}
+
+[project.scripts]
+xiaozhi-desktop-assistant = "xiaozhi_assistant.main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
