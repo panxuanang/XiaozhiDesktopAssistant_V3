@@ -14,7 +14,9 @@ class AISettings:
     base_url: str = ""
     model: str = ""
     api_mode: str = "auto"  # auto | responses | chat
-    timeout_seconds: int = 120
+    # V0.4: a failed provider should not freeze a spoken task for two minutes.
+    # Long writing/research jobs can still pass an explicit larger timeout.
+    timeout_seconds: int = 45
     temperature: float = 0.3
 
 
@@ -33,7 +35,8 @@ class ModuleSettings:
     ocr: bool = True
     screen: bool = True
     system: bool = True
-    # Default to a compact MCP surface to avoid sending dozens of low-level tool schemas.
+    # Developer compatibility mode. Normal users should keep this off so the
+    # Xiaozhi backend sees a very small MCP surface instead of dozens of schemas.
     expose_low_level_tools: bool = False
 
 
@@ -55,7 +58,8 @@ class LocalFirstSettings:
     prefer_local_file_search: bool = True
     ai_for_writing: bool = True
     ai_for_ambiguous_tasks: bool = True
-    show_api_usage_in_result: bool = True
+    # Internal execution details are kept in logs; do not make TTS read them.
+    show_api_usage_in_result: bool = False
 
 
 @dataclass
@@ -72,6 +76,28 @@ class WorkMateSettings:
 
 
 @dataclass
+class PerformanceSettings:
+    # Small deterministic commands should never touch the user's AI API.
+    fast_route_enabled: bool = True
+    # Generic desktop agent is the final fallback only. Its API call gets a much
+    # smaller timeout than document writing/research.
+    agent_timeout_seconds: int = 25
+    agent_max_steps: int = 4
+    agent_max_tools: int = 16
+    # Browser navigation returns after launch/navigation is issued. DOM-reading
+    # operations can wait later when the user actually asks to read the page.
+    browser_start_timeout_seconds: float = 5.0
+    browser_background_warmup: bool = False
+    # WeChat uses short adaptive waits and UIA verification rather than long
+    # fixed sleeps. These are conservative defaults for normal Windows PCs.
+    wechat_search_timeout_seconds: float = 1.2
+    wechat_verify_timeout_seconds: float = 1.4
+    wechat_poll_interval_seconds: float = 0.10
+    # Persist timing records in the existing action database for diagnostics.
+    timing_log_enabled: bool = True
+
+
+@dataclass
 class AppSettings:
     xiaozhi_endpoint: str = ""
     auto_connect: bool = True
@@ -83,6 +109,7 @@ class AppSettings:
     safety: SafetySettings = field(default_factory=SafetySettings)
     local_first: LocalFirstSettings = field(default_factory=LocalFirstSettings)
     workmate: WorkMateSettings = field(default_factory=WorkMateSettings)
+    performance: PerformanceSettings = field(default_factory=PerformanceSettings)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "AppSettings":
@@ -101,6 +128,7 @@ class AppSettings:
             safety=_filtered(SafetySettings, data.get("safety", {})),
             local_first=_filtered(LocalFirstSettings, data.get("local_first", {})),
             workmate=_filtered(WorkMateSettings, data.get("workmate", {})),
+            performance=_filtered(PerformanceSettings, data.get("performance", {})),
         )
 
 
@@ -110,7 +138,12 @@ def load_settings(path: Path | None = None) -> AppSettings:
         return AppSettings()
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        return AppSettings.from_dict(data)
+        settings = AppSettings.from_dict(data)
+        # Older builds persisted 120s. Preserve custom lower values but migrate the
+        # legacy long timeout so an existing installation benefits immediately.
+        if settings.ai.timeout_seconds > 60:
+            settings.ai.timeout_seconds = 45
+        return settings
     except Exception:
         return AppSettings()
 
@@ -123,8 +156,8 @@ def save_settings(settings: AppSettings, path: Path | None = None) -> None:
     tmp.replace(path)
 
 
-# Presets intentionally leave the model blank. Model IDs change faster than the desktop client;
-# the user can paste the exact model/deployment name from their provider console.
+# Presets intentionally leave the model blank. Model IDs change faster than the
+# desktop client; paste the exact model/deployment name from the provider console.
 PROVIDER_PRESETS: dict[str, dict[str, str]] = {
     "OpenAI": {"base_url": "https://api.openai.com/v1", "model": ""},
     "DeepSeek": {"base_url": "https://api.deepseek.com", "model": ""},

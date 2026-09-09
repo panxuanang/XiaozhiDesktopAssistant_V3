@@ -10,6 +10,7 @@ from openai import OpenAI
 
 from ..config import load_settings
 from ..secrets_store import get_api_key
+from ..performance import mark_api_call
 
 
 class AIError(RuntimeError):
@@ -17,14 +18,9 @@ class AIError(RuntimeError):
 
 
 class AIClient:
-    """Unified AI adapter for OpenAI, DeepSeek, Doubao Ark and OpenAI-compatible APIs.
+    """Unified OpenAI-compatible adapter with latency-safe fallback behavior."""
 
-    Official OpenAI endpoints prefer the Responses API. Other OpenAI-compatible
-    endpoints prefer Chat Completions because that is the most widely supported
-    compatibility surface. Auto mode can still fall back to the other API.
-    """
-
-    def __init__(self, *, timeout_seconds: float | None = None, max_retries: int = 1) -> None:
+    def __init__(self, *, timeout_seconds: float | None = None, max_retries: int = 0) -> None:
         settings = load_settings().ai
         key = get_api_key()
         if not key:
@@ -47,39 +43,57 @@ class AIClient:
         return host == "api.openai.com" or host.endswith(".openai.com")
 
     def _auto_order(self) -> tuple[str, str]:
-        # Most third-party "OpenAI-compatible" services implement Chat
-        # Completions first. Trying Responses first against those services can
-        # cause a long timeout before the fallback is attempted.
         return ("responses", "chat") if self._is_official_openai() else ("chat", "responses")
+
+    @staticmethod
+    def _should_try_fallback(exc: Exception) -> bool:
+        """Fallback only for fast protocol incompatibility, never after network/time/rate errors.
+
+        Old behavior tried the second protocol after *every* failure. A 45-120 second
+        timeout could therefore happen twice, which looked like the app had frozen.
+        """
+        text = str(exc).lower()
+        hard_stop = (
+            "timeout", "timed out", "connection", "connect error", "network",
+            "401", "403", "unauthorized", "forbidden", "429", "rate limit",
+            "quota", "insufficient", "api key",
+        )
+        if any(k in text for k in hard_stop):
+            return False
+        compat = (
+            "404", "405", "not found", "unsupported", "not supported",
+            "unknown endpoint", "unknown route", "not implemented", "responses api",
+            "chat completions", "unrecognized request", "invalid endpoint",
+        )
+        return any(k in text for k in compat)
 
     def complete(self, prompt: str, system: str = "你是专业、可靠的中文办公助手。", max_output_tokens: int = 8192) -> str:
         mode = self.settings.api_mode
-        errors: list[str] = []
-
         if mode == "responses":
             try:
                 return self._responses(prompt, system, max_output_tokens)
             except Exception as exc:
                 raise AIError(f"Responses API: {exc}") from exc
-
         if mode == "chat":
             try:
                 return self._chat(prompt, system, max_output_tokens)
             except Exception as exc:
                 raise AIError(f"Chat Completions: {exc}") from exc
 
-        for api_name in self._auto_order():
+        first, second = self._auto_order()
+        try:
+            return self._responses(prompt, system, max_output_tokens) if first == "responses" else self._chat(prompt, system, max_output_tokens)
+        except Exception as first_exc:
+            if not self._should_try_fallback(first_exc):
+                label = "Responses API" if first == "responses" else "Chat Completions"
+                raise AIError(f"{label}: {first_exc}") from first_exc
             try:
-                if api_name == "responses":
-                    return self._responses(prompt, system, max_output_tokens)
-                return self._chat(prompt, system, max_output_tokens)
-            except Exception as exc:
-                label = "Responses API" if api_name == "responses" else "Chat Completions"
-                errors.append(f"{label}: {exc}")
-
-        raise AIError("AI 调用失败：" + " | ".join(errors))
+                return self._responses(prompt, system, max_output_tokens) if second == "responses" else self._chat(prompt, system, max_output_tokens)
+            except Exception as second_exc:
+                raise AIError(f"AI 调用失败：{first}: {first_exc} | {second}: {second_exc}") from second_exc
 
     def _responses(self, prompt: str, system: str, max_output_tokens: int) -> str:
+        mark_api_call()
         response = self.client.responses.create(
             model=self.settings.model,
             instructions=system,
@@ -89,7 +103,6 @@ class AIClient:
         text = getattr(response, "output_text", None)
         if text:
             return text.strip()
-        # Compatibility fallback for providers that emulate Responses incompletely.
         data = response.model_dump() if hasattr(response, "model_dump") else {}
         chunks: list[str] = []
         for item in data.get("output", []) or []:
@@ -109,14 +122,15 @@ class AIClient:
             ],
             "max_tokens": max_output_tokens,
         }
-        # Temperature is not accepted by every reasoning model/provider.
         if self.settings.temperature is not None:
             kwargs["temperature"] = self.settings.temperature
         try:
+            mark_api_call()
             response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:
             if "temperature" in str(exc).lower():
                 kwargs.pop("temperature", None)
+                mark_api_call()
                 response = self.client.chat.completions.create(**kwargs)
             else:
                 raise
@@ -129,17 +143,16 @@ class AIClient:
         path = Path(image_path)
         mime = "image/png" if path.suffix.lower() == ".png" else "image/jpeg"
         data_url = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+        mark_api_call()
         response = self.client.chat.completions.create(
             model=self.settings.model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": question},
-                        {"type": "image_url", "image_url": {"url": data_url}},
-                    ],
-                }
-            ],
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": data_url}},
+                ],
+            }],
             max_tokens=4096,
         )
         if not response.choices or not response.choices[0].message.content:

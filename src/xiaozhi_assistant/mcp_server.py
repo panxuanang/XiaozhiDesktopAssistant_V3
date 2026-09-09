@@ -7,59 +7,55 @@ from mcp.server.fastmcp import FastMCP
 from .config import load_settings
 from .logging_setup import setup_logging
 from . import mcp_facade
-from .workflow_templates import list_templates
-from .tools import browser, files, office, pdf_tools, ppt, research, screen, system, wechat, windows, workmate
 
 setup_logging()
 logger = logging.getLogger(__name__)
 settings = load_settings()
 mcp = FastMCP("小智打工人搭子")
 
-# The high-level Xiaozhi surface deliberately returns concise, speech-ready results.
-# Full details remain available in task center/logs and through explicit read/summary tools.
-mcp.tool(description="打工人搭子统一入口。优先直接执行；用户未要求总结/分析时，只返回一句简短结果，不主动朗读网页、文件或界面内容。") (
-    mcp_facade.workmate
-)
-# Keep ONE generic execution fallback visible in normal mode.
-# V0.3.1 hid this together with low-level tools, which could make Xiaozhi
-# answer verbally instead of executing commands that workmate did not match.
-# desktop_agent itself still uses the concise speech policy, so restoring it
-# does not bring back the old verbose narration problem.
-mcp.tool(description="通用电脑执行入口。用于 workmate 未覆盖的电脑任务；会实际执行本地工具，动作完成后只简短汇报。") (
-    mcp_facade.desktop_agent
-)
-mcp.tool(description="任务中心：list 查看任务/定时发送，get 查看单个任务，process 处理任务，cancel_schedule 取消定时发送。")(
-    workmate.task_center
-)
-mcp.tool(description="从指定老板/重要联系人微信会话中读取最近可访问文字，并自动关联近期工作附件，创建一个待处理任务。")(
-    workmate.capture_wechat_task
-)
-mcp.tool(description="处理已捕获的工作任务。Excel 优先规则/本地计算；PDF/Word读取优先本地；只有语义改写等才调用用户自己的 AI API。")(
-    workmate.process_work_task
-)
-mcp.tool(description="为最新已完成任务安排微信定时交付。定时发送是外部动作，需要用户明确确认后 confirmed=true。")(
-    workmate.schedule_latest_task
-)
-mcp.tool(description="建立/更新本地办公文件索引。只读取本机文件，不调用 AI。") (workmate.index_work_files)
-mcp.tool(description="搜索本地办公文件索引；没有索引时回退到文件名搜索。全程本地。") (workmate.search_work_files)
-mcp.tool(description="本地提取式总结当前浏览器网页。只有用户明确要求总结页面时使用。") (workmate.local_summarize_current_webpage)
-mcp.tool(description="本地提取式总结 PDF。只有用户明确要求总结时使用。") (workmate.local_summarize_pdf)
-mcp.tool(description="列出内置打工人场景模板及示例口令。") (list_templates)
-mcp.tool(description="多来源联网调研：本地浏览器搜索并逐页提取，本地先压缩；可选只调用一次用户API做综合，最终生成Word报告。") (research.web_research_report)
-mcp.tool(description="联网调研并生成Word后准备发送微信；仍保留微信发送确认，不会绕过安全层。") (research.web_research_to_wechat)
-mcp.tool(description="按某一列不同值把Excel拆成多个文件或同一工作簿多个Sheet，全程本地，不调用API。") (office.excel_split_by_column)
-mcp.tool(description="对一个文件夹内多个Excel重复执行同一处理计划；计划只生成一次，批量执行全在本地。") (office.excel_batch_process_directory)
+# Consumer mode intentionally exposes a tiny surface.  Xiaozhi sends the whole
+# utterance to workmate; the PC decides locally whether a deterministic tool or AI
+# is needed.  This avoids huge tool schemas and overlapping routing decisions.
+mcp.tool(description=(
+    "所有电脑工作统一入口：打开软件/网页、文件、Excel、Word/PDF/PPT、微信、"
+    "网页调研、截图、窗口、定时交付等都把用户完整原话交给这个工具。"
+    "电脑端优先零API本地执行；只有写作或无法确定的复杂语义任务才调用用户自己的AI。"
+))(mcp_facade.workmate)
+
+mcp.tool(description="任务中心：查看任务、处理任务、取消定时发送。") (mcp_facade.task_center)
+mcp.tool(description="搜索本机办公文件索引。全程本地，不调用AI。") (mcp_facade.search_work_files)
+mcp.tool(description="性能诊断：查看最近电脑端任务耗时、路由以及API/工具调用次数。") (mcp_facade.performance_report)
+
+# Warm-up is opt-in.  Default is false so startup remains light and we do not open
+# a browser the user did not request.
+if settings.modules.browser and settings.performance.browser_background_warmup:
+    try:
+        from .fast_browser import warmup_async
+        warmup_async()
+    except Exception:
+        pass
 
 
 def _enabled(name: str) -> bool:
     return bool(getattr(settings.modules, name, True))
 
 
-# Developer compatibility mode only controls the MANY low-level schemas.
-# The single high-level desktop_agent above stays visible in normal mode so
-# arbitrary spoken computer tasks can still execute without exposing dozens
-# of MCP tools (which could otherwise bloat the tool list).
+# Developer compatibility mode keeps the old full surface.  Import the heavy
+# Office/browser stack only when the user explicitly enables this mode.
 if settings.modules.expose_low_level_tools:
+    from .tools import browser, files, office, pdf_tools, ppt, research, screen, system, wechat, windows, workmate
+
+    # Apply the same action-speed shims before registration.
+    try:
+        from . import fast_browser
+        browser.browser_open = fast_browser.quick_open
+        browser.browser_search = fast_browser.quick_search
+        from .fast_office import write_material_one_call
+        office.write_material = write_material_one_call
+    except Exception:
+        pass
+
+    mcp.tool(description="开发者通用桌面Agent。仅调试/兼容模式使用。") (mcp_facade.desktop_agent)
     if _enabled("files"):
         mcp.tool(description="按名称在电脑目录中搜索文件或文件夹。") (files.search_files)
         mcp.tool(description="查看一个目录中的文件和子目录。") (files.list_directory)

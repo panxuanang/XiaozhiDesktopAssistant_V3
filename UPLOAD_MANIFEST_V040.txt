@@ -1,0 +1,28 @@
+V0.4.0 upload-ready overlay for XiaozhiDesktopAssistant_V3
+
+OVERWRITE:
+- VERSION
+- pyproject.toml
+- installer/XiaozhiAssistant.iss
+- src/xiaozhi_assistant/config.py
+- src/xiaozhi_assistant/agent.py
+- src/xiaozhi_assistant/mcp_server.py
+- src/xiaozhi_assistant/llm/client.py
+- src/xiaozhi_assistant/tools/wechat.py
+
+ADD OR OVERWRITE:
+- src/xiaozhi_assistant/mcp_facade.py
+- src/xiaozhi_assistant/speech_policy.py
+- src/xiaozhi_assistant/performance.py
+- src/xiaozhi_assistant/fast_router.py
+- src/xiaozhi_assistant/fast_browser.py
+- src/xiaozhi_assistant/fast_office.py
+- tests/test_speech_policy.py
+- tests/test_performance_routing.py
+- tests/test_agent_tool_selection.py
+- CHANGELOG_V040.md
+- README_V040_UPGRADE.md
+- docs/V040_PERFORMANCE_TEST.md
+
+All other V0.3 project files remain in the repository unchanged.
+- xiaozhi-agent-prompt.txt (updated server-side prompt reference)
