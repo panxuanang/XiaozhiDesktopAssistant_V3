@@ -20,6 +20,14 @@ mcp = FastMCP("小智打工人搭子")
 mcp.tool(description="打工人搭子统一入口。优先直接执行；用户未要求总结/分析时，只返回一句简短结果，不主动朗读网页、文件或界面内容。") (
     mcp_facade.workmate
 )
+# Keep ONE generic execution fallback visible in normal mode.
+# V0.3.1 hid this together with low-level tools, which could make Xiaozhi
+# answer verbally instead of executing commands that workmate did not match.
+# desktop_agent itself still uses the concise speech policy, so restoring it
+# does not bring back the old verbose narration problem.
+mcp.tool(description="通用电脑执行入口。用于 workmate 未覆盖的电脑任务；会实际执行本地工具，动作完成后只简短汇报。") (
+    mcp_facade.desktop_agent
+)
 mcp.tool(description="任务中心：list 查看任务/定时发送，get 查看单个任务，process 处理任务，cancel_schedule 取消定时发送。")(
     workmate.task_center
 )
@@ -47,12 +55,11 @@ def _enabled(name: str) -> bool:
     return bool(getattr(settings.modules, name, True))
 
 
-# Developer compatibility mode. The generic AI agent is intentionally hidden in normal
-# mode so Xiaozhi does not choose it instead of the deterministic workmate entry.
+# Developer compatibility mode only controls the MANY low-level schemas.
+# The single high-level desktop_agent above stays visible in normal mode so
+# arbitrary spoken computer tasks can still execute without exposing dozens
+# of MCP tools (which could otherwise bloat the tool list).
 if settings.modules.expose_low_level_tools:
-    mcp.tool(description="通用电脑智能体开发者兜底入口。动作结果仍会被电脑端压缩为一句话。")(
-        mcp_facade.desktop_agent
-    )
     if _enabled("files"):
         mcp.tool(description="按名称在电脑目录中搜索文件或文件夹。") (files.search_files)
         mcp.tool(description="查看一个目录中的文件和子目录。") (files.list_directory)

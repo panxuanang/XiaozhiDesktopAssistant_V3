@@ -1,5 +1,5 @@
 #define MyAppName "小智打工人搭子"
-#define MyAppVersion "0.3.1"
+#define MyAppVersion "0.3.2"
 #define MyAppExeName "XiaozhiDesktopAssistant.exe"
 [Setup]
 AppId={{9E8732A5-BB92-4E96-9BD1-8C37D0C3CFA9}
