@@ -6,6 +6,7 @@ from typing import Any, Callable
 from .action_log import record
 from .llm import AIClient
 from .local_index import search_index
+from .speech_policy import compact_reply, compact_tool_result
 from .tools import browser, files, office, pdf_tools, ppt, research, screen, system, wechat, windows
 from .tools import workmate as workmate_tools
 
@@ -41,11 +42,11 @@ TOOLS: dict[str, tuple[Callable[..., Any], dict[str, Any]]] = {
     "search_pdf": (pdf_tools.search_pdf, _schema("search_pdf", "搜索PDF关键词", {"path":{"type":"string"},"keyword":{"type":"string"}}, ["path","keyword"])),
     "create_presentation": (ppt.create_presentation, _schema("create_presentation", "根据结构化提纲本地生成PPTX", {"path":{"type":"string"},"title":{"type":"string"},"slides_json":{"type":"string"},"subtitle":{"type":"string","default":""}}, ["path","title","slides_json"])),
     "read_presentation": (ppt.read_presentation, _schema("read_presentation", "读取PPT文字", {"path":{"type":"string"}}, ["path"])),
-    "browser_open": (browser.browser_open, _schema("browser_open", "打开网页", {"url":{"type":"string"}}, ["url"])),
-    "browser_search": (browser.browser_search, _schema("browser_search", "搜索网页", {"query":{"type":"string"},"engine":{"type":"string","enum":["bing","baidu","google"],"default":"bing"}}, ["query"])),
+    "browser_open": (browser.browser_open, _schema("browser_open", "只打开网页，不读取、不总结页面内容", {"url":{"type":"string"}}, ["url"])),
+    "browser_search": (browser.browser_search, _schema("browser_search", "只执行网页搜索，不自动总结结果", {"query":{"type":"string"},"engine":{"type":"string","enum":["bing","baidu","google"],"default":"bing"}}, ["query"])),
     "web_research_report": (research.web_research_report, _schema("web_research_report", "多来源联网调研：本地收集/提炼网页，可选一次AI综合，生成Word报告", {"topic":{"type":"string"},"source_count":{"type":"integer","default":5},"output_path":{"type":"string","default":""},"engine":{"type":"string","enum":["bing","baidu","google"],"default":"bing"},"use_ai":{"type":"boolean","default":True}}, ["topic"])),
-    "browser_current_page": (browser.browser_current_page, _schema("browser_current_page", "读取当前网页DOM正文", {"max_chars":{"type":"integer","default":24000}})),
-    "local_summarize_current_webpage": (workmate_tools.local_summarize_current_webpage, _schema("local_summarize_current_webpage", "本地提取式总结当前网页，不调用API", {"max_sentences":{"type":"integer","default":6}})),
+    "browser_current_page": (browser.browser_current_page, _schema("browser_current_page", "读取当前网页DOM正文。只有用户明确要求查看/总结/分析页面内容时才调用。", {"max_chars":{"type":"integer","default":24000}})),
+    "local_summarize_current_webpage": (workmate_tools.local_summarize_current_webpage, _schema("local_summarize_current_webpage", "本地提取式总结当前网页，不调用API。只有用户明确要求总结时才调用。", {"max_sentences":{"type":"integer","default":6}})),
     "browser_click_text": (browser.browser_click_text, _schema("browser_click_text", "按可见文字点击网页按钮或链接", {"text":{"type":"string"}}, ["text"])),
     "browser_fill": (browser.browser_fill, _schema("browser_fill", "填写网页输入框", {"field":{"type":"string"},"value":{"type":"string"}}, ["field","value"])),
     "browser_extract_tables": (browser.browser_extract_tables, _schema("browser_extract_tables", "提取网页表格", {})),
@@ -68,26 +69,27 @@ TOOLS: dict[str, tuple[Callable[..., Any], dict[str, Any]]] = {
     "local_ocr_screen": (screen.local_ocr_screen, _schema("local_ocr_screen", "仅在UIA/DOM不可用时OCR屏幕", {"keyword":{"type":"string","default":""}})),
 }
 
-SYSTEM_PROMPT = """你是运行在用户 Windows 电脑上的执行型桌面助手。目标是可靠完成任务，而不是只给教程。
+SYSTEM_PROMPT = """你是运行在用户 Windows 电脑上的执行型桌面助手。目标是可靠完成任务，而不是讲解操作过程。
 优先级：直接文件/API操作 > 本地结构化计算 > DOM/UI Automation > 快捷键 > 本地OCR > 坐标点击。
 尽量减少外部AI调用：你自己已经是当前一次AI调用，所以不要把简单计算再次交给模型；Excel计算必须使用本地工具。
+
+【动作、读取、汇报必须分开】
+- 用户只说“打开/点击/搜索/输入/最小化/保存/移动”等动作时，只完成动作。
+- 不要因为打开了网页就继续读取网页；不要因为读取了网页就自动总结。
+- browser_open 之后，除非用户明确要求“看看内容/总结/分析/说什么”，否则禁止调用 browser_current_page 或总结工具。
+- 用户没有要求了解内容时，不要主动描述网页、文件、窗口或控件。
+
 规则：
 1. 不编造文件、表格、网页或执行结果；先读取真实数据。
 2. Word/PPT 直接生成文件，不要打开Office模拟打字。
 3. Excel 常规整理优先 excel_process_instruction / excel_local_analysis；拆表、批处理、匹配合并使用专用本地工具。
-4. 单页总结优先 local_summarize_current_webpage；需要多来源调研报告时优先 web_research_report。
+4. 单页总结只在用户明确要求总结时使用 local_summarize_current_webpage；需要多来源调研报告时优先 web_research_report。
 5. 微信发送必须 prepare 后等待用户确认。定时发送必须在明确确认后 confirmed=true。
 6. 删除、支付、下单、管理员命令等高风险动作不自动执行。
-7. 最终简洁说明完成了什么、文件在哪里、是否使用API；失败说明具体原因。
+7. 动作任务完成后只说一句结果，通常不超过20个汉字；不要复述工具输出。
+8. 只有用户明确要求总结、分析、详细说明、汇报结果时才给较完整内容。
+9. 失败只说失败原因和下一步，不向用户朗读堆栈或内部调试信息。
 """
-
-
-def _tool_result(value: Any, max_chars: int = 24000) -> str:
-    if isinstance(value, str):
-        text = value
-    else:
-        text = json.dumps(value, ensure_ascii=False, default=str)
-    return text[:max_chars] + ("...[截断]" if len(text) > max_chars else "")
 
 
 def desktop_agent(instruction: str, max_steps: int = 10) -> str:
@@ -96,7 +98,7 @@ def desktop_agent(instruction: str, max_steps: int = 10) -> str:
     if explicit_wechat_confirm:
         pending = wechat.latest_pending_message()
         if pending:
-            return wechat.wechat_confirm_send(pending["pending_id"])
+            return compact_reply(instruction, wechat.wechat_confirm_send(pending["pending_id"]))
     ai = AIClient()
     messages: list[dict[str, Any]] = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -115,6 +117,7 @@ def desktop_agent(instruction: str, max_steps: int = 10) -> str:
         msg = response.choices[0].message
         if not msg.tool_calls:
             answer = msg.content or "任务已结束，但模型没有返回文字结果。"
+            answer = compact_reply(instruction, answer)
             record("desktop_agent", {"instruction": instruction}, detail=str(answer)[:1000])
             return str(answer)
         messages.append(msg.model_dump(exclude_none=True))
@@ -133,7 +136,7 @@ def desktop_agent(instruction: str, max_steps: int = 10) -> str:
                     elif name == "window_action" and args.get("action") == "close" and args.get("confirmed") and "确认" not in normalized:
                         result = "安全阻止：当前用户输入没有明确确认关闭窗口。"
                     else:
-                        result = _tool_result(func(**args))
+                        result = compact_tool_result(name, func(**args))
                 except Exception as exc:
                     result = f"工具执行失败：{type(exc).__name__}: {exc}"
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
